@@ -313,7 +313,6 @@ export default function Home() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapLoadingRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const htmlMarkersRef = useRef<Map<number, HTMLElement>>(new Map());
   const searchOriginRef = useRef<{ center: [number, number]; zoom: number } | null>(null);
   const listPanelRef = useRef<HTMLElement>(null);
   const listScrollRef = useRef<HTMLDivElement>(null);
@@ -347,6 +346,7 @@ export default function Home() {
   const showTitlesRef = useRef(false);
   const hoveredLabelIdRef = useRef<number | null>(null);
   const hoveredLabelLeaveTimerRef = useRef(0);
+  const initialFitRef = useRef(true);
 
   const categories = useMemo(() => unique(places.map((place) => place.category)), [places]);
   const countries = useMemo(() => unique(places.map((place) => place.country))
@@ -455,27 +455,6 @@ export default function Home() {
       map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
       map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
-      // DOM markers do not depend on the style/worker lifecycle, so the database
-      // locations remain visible even while the basemap is still loading.
-      for (const place of places) {
-        const markerElement = document.createElement("button");
-        markerElement.type = "button";
-        markerElement.title = place.name;
-        markerElement.setAttribute("aria-label", place.name);
-        markerElement.style.cssText = place.top
-          ? "width:24px;height:24px;border:0;background:transparent;color:#39d9cc;font-size:24px;line-height:24px;filter:drop-shadow(0 0 5px #071827);cursor:pointer;padding:0"
-          : "width:13px;height:13px;border:2px solid #071827;border-radius:50%;background:#39d9cc;box-shadow:0 0 0 2px rgba(57,217,204,.3);cursor:pointer;padding:0";
-        if (place.top) markerElement.textContent = "★";
-        markerElement.addEventListener("click", (event) => {
-          event.stopPropagation();
-          if (place.clipUrl) setSelected(place);
-        });
-        new maplibregl.Marker({ element: markerElement, anchor: "center" })
-          .setLngLat([place.longitude, place.latitude])
-          .addTo(map);
-        htmlMarkersRef.current.set(place.id, markerElement);
-      }
-
       let prefetchTimer = 0;
       let glowTimer = 0;
       let glowFrame = 0;
@@ -545,8 +524,8 @@ export default function Home() {
         map.off("idle", scheduleTilePrefetch);
       };
 
-      const initializeMapLayers = () => {
-        if (cancelled || !map.isStyleLoaded() || map.getSource("clips")) return;
+      map.on("load", () => {
+        if (cancelled) return;
         mapLoadingRef.current?.classList.remove("visible");
 
         const star = makeTopStar();
@@ -564,7 +543,7 @@ export default function Home() {
           });
         }
         map.addSource("clips", {
-          type: "geojson", data: placesToGeoJson(places), cluster: false,
+          type: "geojson", data: placesToGeoJson(places), cluster: true, clusterMaxZoom: 16, clusterRadius: 22,
         });
         map.addSource("active-clip", { type: "geojson", data: placesToGeoJson([]) });
         map.addSource("hovered-label", { type: "geojson", data: placesToGeoJson([]) });
@@ -796,26 +775,14 @@ export default function Home() {
         setMapReady(true);
         syncViewportBounds();
         wakeMap();
-      };
-      map.on("styledata", initializeMapLayers);
-      map.on("load", initializeMapLayers);
-      map.on("idle", initializeMapLayers);
-      initializeMapLayers();
+      });
     });
     return () => {
       cancelled = true;
       detachMapWakeups();
-      htmlMarkersRef.current.clear();
       mapRef.current?.remove(); mapRef.current = null;
     };
   }, [places]);
-
-  useEffect(() => {
-    const visibleIds = new Set(visiblePlaces.map((place) => place.id));
-    htmlMarkersRef.current.forEach((element, id) => {
-      element.style.display = visibleIds.has(id) ? "block" : "none";
-    });
-  }, [visiblePlaces]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource("clips") as GeoJSONSource | undefined;
@@ -862,9 +829,14 @@ export default function Home() {
       const south = Math.min(...visiblePlaces.map((place) => place.latitude));
       const north = Math.max(...visiblePlaces.map((place) => place.latitude));
       const maxZoom = visiblePlaces.length <= 4 ? 13 : visiblePlaces.length <= 20 ? 11 : 7;
+      const initialFit = initialFitRef.current;
       map.fitBounds([[west, south], [east, north]], {
-        padding, maxZoom, duration: 650,
+        padding, maxZoom, duration: initialFit ? 0 : 650,
       });
+      if (initialFit) {
+        map.setZoom(Math.max(map.getMinZoom(), map.getZoom() - 1));
+        initialFitRef.current = false;
+      }
     }, searchTokens.length ? 260 : 0);
     return () => window.clearTimeout(timeout);
   }, [mapReady, searchTokens.length, visiblePlaces]);
