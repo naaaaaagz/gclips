@@ -73,6 +73,13 @@ button, a, input { font: inherit; -webkit-tap-highlight-color: transparent; }
 .title-toggle-track i { position: absolute; left: 2px; top: 2px; width: 11px; height: 11px; border-radius: 50%; background: #a4b3b9; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); transition: transform .2s ease, background .2s ease, box-shadow .2s ease; }
 .title-toggle.active .title-toggle-track { border-color: rgba(83, 230, 218, .58); background: rgba(29, 129, 142, .62); }
 .title-toggle.active .title-toggle-track i { transform: translateX(13px); background: #70e7dc; box-shadow: 0 0 8px rgba(57, 217, 204, .75); }
+.zed-toggle { border-color: rgba(177, 118, 255, .32); color: #caa8ff; }
+.zed-toggle:hover { border-color: rgba(190, 139, 255, .58); color: #eadcff; }
+.zed-toggle.active { border-color: rgba(177, 118, 255, .62); background: rgba(57, 31, 83, .92); color: #e7d6ff; }
+.zed-toggle .title-toggle-track { border-color: rgba(177, 118, 255, .46); background: rgba(92, 57, 116, .62); }
+.zed-toggle .title-toggle-track i { background: #c39af8; }
+.zed-toggle.active .title-toggle-track { border-color: rgba(197, 151, 255, .72); background: rgba(131, 73, 183, .74); }
+.zed-toggle.active .title-toggle-track i { background: #e0c5ff; box-shadow: 0 0 9px rgba(183, 119, 255, .82); }
 
 .filter-button { position: relative; z-index: 14; display: inline-flex; align-items: center; gap: 9px; min-height: 43px; padding: 0 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 14px 40px rgba(0, 6, 12, .28); backdrop-filter: blur(16px); cursor: pointer; font-size: 13px; font-weight: 700; }
 .filter-button:hover, .filter-button[aria-expanded="true"] { border-color: rgba(57, 217, 204, .42); background: rgba(10, 42, 61, .92); }
@@ -206,6 +213,7 @@ button, a, input { font: inherit; -webkit-tap-highlight-color: transparent; }
   .filter-area { top: 61px; right: 14px; }
   .search-box { width: min(300px, calc(100vw - 139px)); min-width: 0; height: 40px; }
   .title-toggle { min-height: 40px; padding: 0 9px; }
+  .title-toggle.zed-toggle b { display: block; }
   .title-toggle b { display: none; }
   .filter-button { min-height: 40px; padding: 0 12px; font-size: 0; }
   .filter-icon { width: 18px; }
@@ -231,6 +239,7 @@ button, a, input { font: inherit; -webkit-tap-highlight-color: transparent; }
   .search-box input { font-size: 12px; }
   .title-toggle { min-height: 40px; flex: 0 0 auto; flex-direction: row-reverse; gap: 6px; padding: 0 8px; }
   .title-toggle b { display: block; font-size: 10px; }
+  .title-toggle.zed-toggle b { display: none; }
   .filter-button { width: 40px; min-height: 40px; flex: 0 0 40px; justify-content: center; gap: 0; padding: 0; }
   .filter-icon { width: 18px; }
   .filter-options, .filter-options.single-option { grid-template-columns: max-content; }

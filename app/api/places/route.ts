@@ -13,6 +13,11 @@ const SOURCE_PARTS = [
 
 type Cell = { v?: string | number | null } | null;
 
+const SOURCE_TABS = [
+  { gid: "0", zedSource: false },
+  { gid: "20260907", zedSource: true },
+] as const;
+
 function decodeSource() {
   return atob(SOURCE_PARTS.join(""));
 }
@@ -27,18 +32,20 @@ function getClipId(url: string) {
 
 export async function GET() {
   const source = decodeSource();
-  const endpoint = `https://docs.google.com/spreadsheets/d/${source}/gviz/tq?tqx=out:json&gid=0`;
 
   try {
-    const response = await fetch(endpoint, { next: { revalidate: 300 } });
-    if (!response.ok) throw new Error(`Source returned ${response.status}`);
+    const tables = await Promise.all(SOURCE_TABS.map(async (tab) => {
+      const endpoint = `https://docs.google.com/spreadsheets/d/${source}/gviz/tq?tqx=out:json&gid=${tab.gid}`;
+      const response = await fetch(endpoint, { next: { revalidate: 300 } });
+      if (!response.ok) throw new Error(`Source returned ${response.status}`);
+      const body = await response.text();
+      const start = body.indexOf("{");
+      const end = body.lastIndexOf("}");
+      const payload = JSON.parse(body.slice(start, end + 1));
+      return { rows: payload.table.rows as { c?: Cell[] }[], zedSource: tab.zedSource };
+    }));
 
-    const body = await response.text();
-    const start = body.indexOf("{");
-    const end = body.lastIndexOf("}");
-    const payload = JSON.parse(body.slice(start, end + 1));
-
-    const places = (payload.table.rows as { c?: Cell[] }[])
+    const places = tables.flatMap((table, tableIndex) => table.rows
       .map((row, index) => {
         const coordinates = String(cell(row, 5))
           .split(",")
@@ -48,7 +55,7 @@ export async function GET() {
         const twitch = twitchMetadata[clipId as keyof typeof twitchMetadata];
 
         return {
-          id: index + 1,
+          id: tableIndex * 1_000_000 + index + 1,
           name: String(cell(row, 0)),
           clipUrl,
           category: String(cell(row, 2)),
@@ -60,6 +67,7 @@ export async function GET() {
           country: String(cell(row, 7)),
           clipDate: String(cell(row, 8)),
           top: String(cell(row, 9)).trim().toUpperCase() === "TOP",
+          zedSource: table.zedSource,
           twitchCategory: twitch?.category ?? "",
           twitchKeywords: twitch?.language ?? "",
         };
@@ -69,7 +77,7 @@ export async function GET() {
           place.name &&
           Number.isFinite(place.latitude) &&
           Number.isFinite(place.longitude),
-      );
+      ));
 
     return Response.json(places, {
       headers: { "Cache-Control": "public, max-age=300, s-maxage=300" },

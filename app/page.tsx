@@ -102,7 +102,7 @@ type Place = {
   id: number; name: string; clipUrl: string; category: string;
   sourceKeywords: string; keywords: string; latitude: number; longitude: number;
   twitchTitle: string; country: string; clipDate: string; top: boolean;
-  twitchCategory: string; twitchKeywords: string;
+  twitchCategory: string; twitchKeywords: string; zedSource: boolean;
 };
 
 type SearchSuggestion = {
@@ -250,12 +250,13 @@ function placesToGeoJson(places: Place[]) {
       geometry: { type: "Point" as const, coordinates: [place.longitude, place.latitude] },
       properties: {
         id: place.id, name: place.name || "Névtelen klip", linked: Boolean(place.clipUrl), top: place.top,
+        zedSource: place.zedSource,
       },
     })),
   };
 }
 
-function makeTopStar(glow = 0) {
+function makeTopStar(glow = 0, zed = false) {
   const size = 80;
   const canvas = document.createElement("canvas");
   canvas.width = size; canvas.height = size;
@@ -278,9 +279,9 @@ function makeTopStar(glow = 0) {
     return `rgb(${channels.map((channel) => Math.round(channel + (255 - channel) * glow * 0.52)).join(",")})`;
   };
   const gradient = context.createLinearGradient(8, 6, 31, 34);
-  gradient.addColorStop(0, brighten("#b9fff7"));
-  gradient.addColorStop(0.58, brighten("#39d9cc"));
-  gradient.addColorStop(1, brighten("#247fa3"));
+  gradient.addColorStop(0, brighten(zed ? "#fff0dc" : "#b9fff7"));
+  gradient.addColorStop(0.58, brighten(zed ? "#f6bd7b" : "#39d9cc"));
+  gradient.addColorStop(1, brighten(zed ? "#c8743f" : "#247fa3"));
   context.fillStyle = gradient; context.fill();
   context.lineWidth = 2.5; context.strokeStyle = brighten("#071827"); context.stroke();
   return context.getImageData(0, 0, size, size);
@@ -329,6 +330,7 @@ export default function Home() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [suggestionCursor, setSuggestionCursor] = useState(0);
   const [showTitles, setShowTitles] = useState(false);
+  const [showZed, setShowZed] = useState(true);
   const [listOpen, setListOpen] = useState(false);
   const [listTopOnly, setListTopOnly] = useState(false);
   const [listSort, setListSort] = useState<"date" | "name">("date");
@@ -358,6 +360,7 @@ export default function Home() {
   const suggestionIndex = useMemo(() => buildSearchSuggestions(places), [places]);
   const searchSuggestions = useMemo(() => rankSearchSuggestions(suggestionIndex, searchQuery), [suggestionIndex, searchQuery]);
   const visiblePlaces = useMemo(() => places.filter((place) => {
+    if (!showZed && place.zedSource) return false;
     if (!selectedCategories.includes(place.category) || !selectedCountries.includes(place.country)) return false;
     if (topOnly && !place.top) return false;
     if (!searchTokens.length) return true;
@@ -366,7 +369,7 @@ export default function Home() {
       place.twitchCategory, place.twitchKeywords, place.country, countryNameHu(place.country),
     ].join(" "));
     return searchTokens.every((token) => haystack.includes(token));
-  }), [places, searchTokens, selectedCategories, selectedCountries, topOnly]);
+  }), [places, searchTokens, selectedCategories, selectedCountries, showZed, topOnly]);
   const listPlaces = useMemo(() => {
     const items = visiblePlaces.filter((place) => placeIsInViewport(place, viewportBounds)
       && placeIsInVisibleMapArea(place, mapRef.current, listOpen, listPanelRef.current)
@@ -385,7 +388,7 @@ export default function Home() {
   const highlightedPlace = hoveredListPlace ?? mapHoveredPlace;
   const viewportHidesClips = visiblePlaces.some((place) => !placeIsInViewport(place, viewportBounds)
     || !placeIsInVisibleMapArea(place, mapRef.current, listOpen, listPanelRef.current));
-  const hasActiveFilters = topOnly || listTopOnly || Boolean(searchTokens.length)
+  const hasActiveFilters = !showZed || topOnly || listTopOnly || Boolean(searchTokens.length)
     || selectedCategories.length !== categories.length || selectedCountries.length !== countries.length || viewportHidesClips;
 
   useEffect(() => { listOpenRef.current = listOpen; setViewportRevision((revision) => revision + 1); }, [listOpen]);
@@ -475,14 +478,18 @@ export default function Home() {
             const progress = Math.min(1, (now - startedAt) / 440);
             const strength = Math.sin(progress * Math.PI);
             const color = normal.map((channel, index) => Math.round(channel + (highlight[index] - channel) * strength));
-            map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "linked"], `rgb(${color.join(",")})`, "#7c9299"]);
+            map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "zedSource"], "#f6bd7b", ["get", "linked"], `rgb(${color.join(",")})`, "#7c9299"]);
             const glowingStar = makeTopStar(strength);
             if (glowingStar) map.updateImage("top-star", glowingStar);
+            const glowingZedStar = makeTopStar(strength, true);
+            if (glowingZedStar && map.hasImage("zed-top-star")) map.updateImage("zed-top-star", glowingZedStar);
             if (progress < 1) glowFrame = window.requestAnimationFrame(render);
             else {
-              map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "linked"], "#39d9cc", "#7c9299"]);
+              map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "zedSource"], "#f6bd7b", ["get", "linked"], "#39d9cc", "#7c9299"]);
               const baseStar = makeTopStar();
               if (baseStar) map.updateImage("top-star", baseStar);
+              const baseZedStar = makeTopStar(0, true);
+              if (baseZedStar && map.hasImage("zed-top-star")) map.updateImage("zed-top-star", baseZedStar);
             }
           };
           glowFrame = window.requestAnimationFrame(render);
@@ -531,6 +538,8 @@ export default function Home() {
 
         const star = makeTopStar();
         if (star) map.addImage("top-star", star, { pixelRatio: 2 });
+        const zedStar = makeTopStar(0, true);
+        if (zedStar) map.addImage("zed-top-star", zedStar, { pixelRatio: 2 });
         const titleBackground = makeTitleLabelBackground();
         if (titleBackground) {
           map.addImage("title-label-background", titleBackground, {
@@ -572,7 +581,7 @@ export default function Home() {
           filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "top"], false]],
           paint: {
             "circle-radius": ["case", ["get", "linked"], 5.5, 4.5],
-            "circle-color": ["case", ["get", "linked"], "#39d9cc", "#7c9299"],
+            "circle-color": ["case", ["get", "zedSource"], "#f6bd7b", ["get", "linked"], "#39d9cc", "#7c9299"],
             "circle-color-transition": { duration: 0, delay: 0 },
             "circle-stroke-color": "#071827", "circle-stroke-width": 1.5,
           },
@@ -581,7 +590,7 @@ export default function Home() {
           id: "top-points", type: "symbol", source: "clips",
           filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "top"], true]],
           layout: {
-            "icon-image": "top-star", "icon-size": 0.55, "icon-allow-overlap": true,
+            "icon-image": ["case", ["get", "zedSource"], "zed-top-star", "top-star"], "icon-size": 0.55, "icon-allow-overlap": true,
             "icon-rotation-alignment": "viewport", "icon-pitch-alignment": "viewport", "icon-keep-upright": true,
           },
         });
@@ -627,8 +636,8 @@ export default function Home() {
           filter: ["==", ["get", "top"], false],
           paint: {
             "circle-radius": ["case", ["get", "linked"], 10.5, 8.25],
-            "circle-color": ["case", ["get", "linked"], "#55eadc", "#91a5ac"],
-            "circle-stroke-color": "#b9fff7", "circle-stroke-width": 2, "circle-blur": 0.06,
+            "circle-color": ["case", ["get", "zedSource"], "#ffd19d", ["get", "linked"], "#55eadc", "#91a5ac"],
+            "circle-stroke-color": ["case", ["get", "zedSource"], "#fff0dc", "#b9fff7"], "circle-stroke-width": 2, "circle-blur": 0.06,
           },
         });
         map.addLayer({
@@ -636,7 +645,7 @@ export default function Home() {
           filter: ["==", ["get", "top"], true],
           paint: {
             "circle-radius": 14, "circle-color": "rgba(0, 0, 0, 0)",
-            "circle-stroke-color": "#65eadf", "circle-stroke-width": 2.1, "circle-stroke-opacity": 0.8,
+            "circle-stroke-color": ["case", ["get", "zedSource"], "#ffd19d", "#65eadf"], "circle-stroke-width": 2.1, "circle-stroke-opacity": 0.8,
           },
         }, "top-points");
         map.addLayer({
@@ -964,6 +973,7 @@ export default function Home() {
     setSelectedCategories(categories);
     setSelectedCountries(countries);
     setTopOnly(false);
+    setShowZed(true);
     setListTopOnly(false);
     setSearchQuery("");
     setSearchFocused(false);
@@ -1029,6 +1039,11 @@ export default function Home() {
             </div>
           )}
         </div>
+        <button className={`title-toggle zed-toggle ${showZed ? "active" : ""}`} type="button" role="switch"
+          aria-checked={showZed} aria-label="Zed streamjéből származó klipek megjelenítése"
+          onClick={() => setShowZed((visible) => !visible)}>
+          <span className="title-toggle-track" aria-hidden="true"><i /></span><b>Zed streamjéből</b>
+        </button>
         <button className={`title-toggle ${showTitles ? "active" : ""}`} type="button" role="switch"
           aria-checked={showTitles} aria-label="Klipcímek megjelenítése"
           onClick={() => setShowTitles((visible) => !visible)}>
