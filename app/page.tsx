@@ -355,6 +355,7 @@ export default function Home() {
   const countries = useMemo(() => unique(places.map((place) => place.country))
     .sort((a, b) => countryNameHu(a).localeCompare(countryNameHu(b), "hu")), [places]);
   const categoryCounts = useMemo(() => countValues(places.map((place) => place.category)), [places]);
+  const countryCounts = useMemo(() => countValues(places.map((place) => place.country)), [places]);
   const topCount = useMemo(() => places.filter((place) => place.top).length, [places]);
   const searchTokens = useMemo(() => normalizeSearch(searchQuery).split(/\s+/).filter(Boolean), [searchQuery]);
   const suggestionIndex = useMemo(() => buildSearchSuggestions(places), [places]);
@@ -1074,6 +1075,21 @@ export default function Home() {
                     <label key={category}><input type="checkbox" checked={selectedCategories.includes(category)}
                       onChange={() => toggleFilter(category, selectedCategories, setSelectedCategories)} />
                       <span>{category} <small>({categoryCounts[category]})</small></span></label>
+                  ))}
+                </div>
+              </div>
+              <div className="filter-section">
+                <h2>Ország</h2>
+                <div className="filter-options">
+                  <label className="select-all-option">
+                    <input type="checkbox" checked={selectedCountries.length === countries.length}
+                      onChange={() => setSelectedCountries(selectedCountries.length === countries.length ? [] : countries)} />
+                    <span>ÖSSZES</span>
+                  </label>
+                  {countries.map((country) => (
+                    <label key={country}><input type="checkbox" checked={selectedCountries.includes(country)}
+                      onChange={() => toggleFilter(country, selectedCountries, setSelectedCountries)} />
+                      <span>{countryNameHu(country)} <small>({countryCounts[country]})</small></span></label>
                   ))}
                 </div>
               </div>

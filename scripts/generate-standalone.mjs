@@ -136,6 +136,10 @@ const html = `<!doctype html>
           <h2>Kategória</h2>
           <div class="filter-options" id="category-options"><label class="select-all-option"><input type="checkbox" data-select-all="category" checked><span>ÖSSZES</span></label></div>
         </div>
+        <div class="filter-section">
+          <h2>Ország</h2>
+          <div class="filter-options" id="country-options"><label class="select-all-option"><input type="checkbox" data-select-all="country" checked><span>ÖSSZES</span></label></div>
+        </div>
       </section>
     </div>
 
@@ -187,11 +191,12 @@ const html = `<!doctype html>
     const categories=unique(places.map(place=>place.category)).sort((a,b)=>a.localeCompare(b));
     const countries=unique(places.map(place=>place.country)).sort((a,b)=>countryName(a).localeCompare(countryName(b),"hu"));
     const categoryCounts=countValues(places.map(place=>place.category));
+    const countryCounts=countValues(places.map(place=>place.country));
     const selectedCategories=new Set(categories),selectedCountries=new Set(countries);
     const suggestionIndex=buildSearchSuggestions();
     let topOnly=false,searchQuery="",searchFocused=false,suggestionCursor=0,searchOrigin=null,activeListPlace=null,hoveredListPlace=null,mapHoveredPlace=null,listTopOnly=false,listSort="date",listSortDirection="desc",viewportBounds=null,currentVisible=[],showTitles=false,showZed=true;
     function addFilterOptions(type,values,counts){const container=document.getElementById(type+"-options");values.forEach(value=>{const label=document.createElement("label"),input=document.createElement("input"),span=document.createElement("span"),small=document.createElement("small");input.type="checkbox";input.dataset.filter=type;input.value=value;input.checked=true;span.append(document.createTextNode((type==="country"?countryName(value):value)+" "));small.textContent="("+counts[value]+")";span.append(small);label.append(input,span);container.append(label)})}
-    addFilterOptions("category",categories,categoryCounts);document.getElementById("top-count").textContent="("+places.filter(place=>place.top).length+")";
+    addFilterOptions("category",categories,categoryCounts);addFilterOptions("country",countries,countryCounts);document.getElementById("top-count").textContent="("+places.filter(place=>place.top).length+")";
 
     setTimeout(()=>fetch("${LIVE_URL}").then(response=>response.ok?response.json():{online:false}).then(payload=>{if(payload.online)document.getElementById("live-button").hidden=false}).catch(()=>{}),1600);
 
