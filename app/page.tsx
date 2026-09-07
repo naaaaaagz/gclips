@@ -9,6 +9,7 @@ const BASE_TILE_URL = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}
 const LABEL_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const MAP_STYLE: StyleSpecification = {
   version: 8,
+  glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
   sources: {
     "dark-base": {
       type: "raster", tileSize: 256, maxzoom: 20,
@@ -558,7 +559,7 @@ export default function Home() {
         map.addLayer({
           id: "cluster-count", type: "symbol", source: "clips", filter: ["has", "point_count"],
           layout: {
-            "text-field": ["to-string", ["get", "point_count"]], "text-font": ["Arial"],
+            "text-field": ["to-string", ["get", "point_count"]], "text-font": ["Open Sans Regular"],
             "text-size": ["step", ["get", "point_count"], 13, 100, 12],
             "text-allow-overlap": true, "text-ignore-placement": true,
             "text-anchor": "center", "text-justify": "center", "text-letter-spacing": 0,
@@ -591,7 +592,7 @@ export default function Home() {
             visibility: "none", "icon-image": "title-label-background", "icon-text-fit": "both",
             "icon-text-fit-padding": [5, 8, 5, 8],
             "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "text-field": ["get", "name"], "text-font": ["Arial"], "text-size": 12,
+            "text-field": ["get", "name"], "text-font": ["Open Sans Regular"], "text-size": 12,
             "text-anchor": "bottom", "text-offset": [0, -1.45], "text-max-width": 18,
             "text-allow-overlap": true, "text-ignore-placement": true,
             "text-rotation-alignment": "viewport", "text-pitch-alignment": "viewport",
@@ -609,7 +610,7 @@ export default function Home() {
           layout: {
             "icon-image": "title-label-hover-background", "icon-text-fit": "both", "icon-text-fit-padding": [5, 8, 5, 8],
             "icon-allow-overlap": true, "icon-ignore-placement": true,
-            "text-field": ["get", "name"], "text-font": ["Arial"], "text-size": 12,
+            "text-field": ["get", "name"], "text-font": ["Open Sans Regular"], "text-size": 12,
             "text-anchor": "bottom", "text-offset": [0, -1.45], "text-max-width": 18,
             "text-allow-overlap": true, "text-ignore-placement": true,
             "text-rotation-alignment": "viewport", "text-pitch-alignment": "viewport",
