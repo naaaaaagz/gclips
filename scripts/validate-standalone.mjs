@@ -10,6 +10,7 @@ const code = html.slice(scriptStart, scriptEnd);
 const syntax = spawnSync(process.execPath, ["--input-type=module", "--check"], { input: code, encoding: "utf8" });
 if (syntax.status !== 0) throw new Error(syntax.stderr || syntax.error?.message || "Standalone syntax check failed");
 if (html.includes("unpkg.com/maplibre-gl")) throw new Error("Standalone must use the bundled MapLibre version");
+if (/fetch\(["']\/api\//.test(code)) throw new Error("GitHub Pages has no /api routes; use a full URL");
 
 const expectedDescription = "AgeriVagyok streamjeinek emlékezetes klipjei térképen.";
 const requiredText = [

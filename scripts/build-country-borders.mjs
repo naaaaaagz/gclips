@@ -36,13 +36,18 @@ function clipLine(coordinates) {
   return lines;
 }
 
+// The source vertices are far apart, so 4 decimals (about 10 m) lose nothing visible.
+const roundPoint = ([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4];
+const roundLine = (line) => line.map(roundPoint)
+  .filter((point, index, points) => !index || point[0] !== points[index - 1][0] || point[1] !== points[index - 1][1]);
+
 const features = source.features.flatMap((feature) => {
   const sourceLines = feature.geometry?.type === "LineString"
     ? [feature.geometry.coordinates]
     : feature.geometry?.type === "MultiLineString"
       ? feature.geometry.coordinates
       : [];
-  const lines = sourceLines.flatMap(clipLine);
+  const lines = sourceLines.flatMap(clipLine).map(roundLine).filter((line) => line.length > 1);
   if (!lines.length) return [];
   return [{
     type: "Feature",

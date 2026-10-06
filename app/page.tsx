@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { GeoJSONSource, Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { getClipId } from "../lib/clip-data.mjs";
+import { createTilePrefetcher, tileRingUrls } from "../lib/tile-prefetch.mjs";
 import placesSnapshot from "../data/places-snapshot.json";
 import { manageModalFocus } from "../lib/modal-focus.mjs";
-import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 const TWITCH_URL = "https://www.twitch.tv/agerivagyok";
 const BASE_TILE_URL = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=cb1_25b0_1_cf52869ae38041a055110db7";
@@ -23,7 +23,7 @@ const MAP_STYLE: StyleSpecification = {
     "english-labels": {
       type: "raster", tileSize: 256, maxzoom: 16,
       tiles: [LABEL_TILE_URL],
-      attribution: "&copy; Esri",
+      attribution: "Esri, HERE, Garmin, &copy; OpenStreetMap contributors, and the GIS user community",
     },
   },
   layers: [
@@ -45,71 +45,22 @@ const COUNTRY_NAMES_HU: Record<string, string> = {
   Slovenia: "Szlovénia",
   Sweden: "Svédország",
 };
-const prefetchedTileUrls = new Set<string>();
-const tilePrefetchQueue: string[] = [];
-let activeTilePrefetches = 0;
-
-function drainTilePrefetchQueue() {
-  while (activeTilePrefetches < 4 && tilePrefetchQueue.length) {
-    const url = tilePrefetchQueue.shift();
-    if (!url) return;
-    activeTilePrefetches += 1;
-    fetch(url, { cache: "force-cache", mode: "cors", signal: AbortSignal.timeout(8000) }).then((response) => {
-      if (!response.ok) throw new Error("Tile prefetch failed");
-    }).catch(() => {
-      prefetchedTileUrls.delete(url);
-    }).finally(() => {
-      activeTilePrefetches -= 1;
-      drainTilePrefetchQueue();
-    });
-  }
-}
-
-function queueTilePrefetch(url: string) {
-  if (prefetchedTileUrls.has(url) || tilePrefetchQueue.length >= 96) return;
-  if (prefetchedTileUrls.size > 1600) prefetchedTileUrls.clear();
-  prefetchedTileUrls.add(url);
-  tilePrefetchQueue.push(url);
-  drainTilePrefetchQueue();
-}
-
-function prefetchTileRing(map: MapLibreMap) {
-  for (const url of tilePrefetchQueue.splice(0)) prefetchedTileUrls.delete(url);
+function getViewportBounds(map: MapLibreMap): ViewportBounds {
   const bounds = map.getBounds();
-  const addRing = (zoom: number, template: string) => {
-    const tileCount = 2 ** zoom;
-    const longitudeToX = (longitude: number) => Math.floor(((longitude + 180) / 360) * tileCount);
-    const latitudeToY = (latitude: number) => {
-      const clamped = Math.max(-85.05112878, Math.min(85.05112878, latitude));
-      const radians = clamped * Math.PI / 180;
-      return Math.floor((1 - Math.asinh(Math.tan(radians)) / Math.PI) / 2 * tileCount);
-    };
-    const west = bounds.getWest();
-    let east = bounds.getEast();
-    while (east < west) east += 360;
-    const minX = longitudeToX(west);
-    const maxX = longitudeToX(east);
-    const minY = latitudeToY(bounds.getNorth());
-    const maxY = latitudeToY(bounds.getSouth());
-    for (let y = minY - 1; y <= maxY + 1; y += 1) {
-      if (y < 0 || y >= tileCount) continue;
-      for (let x = minX - 1; x <= maxX + 1; x += 1) {
-        if (x >= minX && x <= maxX && y >= minY && y <= maxY) continue;
-        const wrappedX = ((x % tileCount) + tileCount) % tileCount;
-        queueTilePrefetch(template.replace("{z}", String(zoom)).replace("{x}", String(wrappedX)).replace("{y}", String(y)));
-      }
-    }
-  };
+  return { west: bounds.getWest(), east: bounds.getEast(), south: bounds.getSouth(), north: bounds.getNorth() };
+}
+
+function prefetchTileRing(map: MapLibreMap, prefetcher: ReturnType<typeof createTilePrefetcher>) {
+  const bounds = getViewportBounds(map);
   const zoom = Math.max(2, Math.min(20, Math.floor(map.getZoom())));
-  addRing(zoom, BASE_TILE_URL);
-  addRing(Math.min(16, zoom), LABEL_TILE_URL);
+  prefetcher.update([...tileRingUrls(bounds, zoom, BASE_TILE_URL), ...tileRingUrls(bounds, Math.min(16, zoom), LABEL_TILE_URL)]);
 }
 
 type Place = {
   id: number; name: string; clipUrl: string; category: string;
   sourceKeywords: string; keywords: string; latitude: number; longitude: number;
   twitchTitle: string; country: string; clipDate: string; top: boolean;
-  twitchCategory: string; twitchKeywords: string; zedSource: boolean;
+  twitchCategory: string; zedSource: boolean;
 };
 
 type SearchSuggestion = {
@@ -143,8 +94,6 @@ function buildSearchSuggestions(places: Place[]) {
       { label: place.twitchTitle, kind: "Cím", priority: 3 },
       ...[place.sourceKeywords, place.keywords].flatMap((value) => value.split(","))
         .map((label) => ({ label: label.trim(), kind: "Kulcsszó", priority: 2 })),
-      ...place.twitchKeywords.split(",")
-        .map((label) => ({ label: label.trim(), kind: "Twitch-kulcsszó", priority: 1 })),
     ];
     for (const candidate of candidates) {
       const normalized = normalizeSearch(candidate.label);
@@ -207,11 +156,16 @@ function getMapContentRect(map: MapLibreMap, listOpen: boolean, panel: HTMLEleme
   return { left: Math.min(width - 80, panelWidth + 24), top: 0, right: width, bottom: height };
 }
 
-function placeIsInVisibleMapArea(place: Place, map: MapLibreMap | null, listOpen: boolean, panel: HTMLElement | null) {
-  if (!map) return true;
-  const point = map.project([place.longitude, place.latitude]);
+function placeIdsInVisibleMapArea(places: Place[], map: MapLibreMap, listOpen: boolean, panel: HTMLElement | null) {
+  const bounds = getViewportBounds(map);
   const rect = getMapContentRect(map, listOpen, panel);
-  return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+  const ids = new Set<number>();
+  for (const place of places) {
+    if (!placeIsInViewport(place, bounds)) continue;
+    const point = map.project([place.longitude, place.latitude]);
+    if (point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) ids.add(place.id);
+  }
+  return ids;
 }
 
 function getListAwareMapOptions(map: MapLibreMap, listOpen: boolean, panel: HTMLElement | null, base = 54) {
@@ -262,11 +216,14 @@ function placesToGeoJson(places: Place[]) {
   };
 }
 
+let starCanvas: HTMLCanvasElement | null = null;
+
 function makeTopStar(glow = 0, zed = false) {
   const size = 80;
-  const canvas = document.createElement("canvas");
+  starCanvas ??= document.createElement("canvas");
+  const canvas = starCanvas;
   canvas.width = size; canvas.height = size;
-  const context = canvas.getContext("2d");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) return null;
   context.scale(2, 2);
   const outer = 17; const inner = 7.4; const center = 20;
@@ -321,7 +278,6 @@ export default function Home() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapLoadingRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const searchOriginRef = useRef<{ center: [number, number]; zoom: number } | null>(null);
   const listPanelRef = useRef<HTMLElement>(null);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const listRowRefs = useRef(new Map<number, HTMLDivElement>());
@@ -343,11 +299,11 @@ export default function Home() {
   const [listTopOnly, setListTopOnly] = useState(false);
   const [listSort, setListSort] = useState<"date" | "name">("date");
   const [listSortDirection, setListSortDirection] = useState<"asc" | "desc">("desc");
-  const [activeListPlace, setActiveListPlace] = useState<Place | null>(null);
-  const [hoveredListPlace, setHoveredListPlace] = useState<Place | null>(null);
+  const [activeListChoice, setActiveListPlace] = useState<Place | null>(null);
+  const [hoveredListChoice, setHoveredListPlace] = useState<Place | null>(null);
   const [mapHoveredPlace, setMapHoveredPlace] = useState<Place | null>(null);
-  const [viewportBounds, setViewportBounds] = useState<ViewportBounds | null>(null);
-  const [viewportRevision, setViewportRevision] = useState(0);
+  const [listAreaIds, setListAreaIds] = useState<Set<number> | null>(null);
+  const syncListAreaRef = useRef<() => void>(() => {});
   const [connectorLine, setConnectorLine] = useState<ConnectorLine | null>(null);
   const [online, setOnline] = useState(false);
   const [listAttention, setListAttention] = useState(false);
@@ -368,6 +324,7 @@ export default function Home() {
   const searchTokens = useMemo(() => normalizeSearch(searchQuery).split(/\s+/).filter(Boolean), [searchQuery]);
   const suggestionIndex = useMemo(() => buildSearchSuggestions(places), [places]);
   const searchSuggestions = useMemo(() => rankSearchSuggestions(suggestionIndex, searchQuery), [suggestionIndex, searchQuery]);
+  const suggestionsOpen = searchFocused && normalizeSearch(searchQuery).length >= 2;
   const visiblePlaces = useMemo(() => places.filter((place) => {
     if (!showZed && place.zedSource) return false;
     if ((place.category && !selectedCategories.includes(place.category)) || (place.country && !selectedCountries.includes(place.country))) return false;
@@ -375,13 +332,12 @@ export default function Home() {
     if (!searchTokens.length) return true;
     const haystack = normalizeSearch([
       place.keywords, place.sourceKeywords, place.category, place.name, place.twitchTitle,
-      place.twitchCategory, place.twitchKeywords, place.country, countryNameHu(place.country),
+      place.twitchCategory, place.country, countryNameHu(place.country),
     ].join(" "));
     return searchTokens.every((token) => haystack.includes(token));
   }), [places, searchTokens, selectedCategories, selectedCountries, showZed, topOnly]);
   const listPlaces = useMemo(() => {
-    const items = visiblePlaces.filter((place) => placeIsInViewport(place, viewportBounds)
-      && placeIsInVisibleMapArea(place, mapRef.current, listOpen, listPanelRef.current)
+    const items = visiblePlaces.filter((place) => (!listAreaIds || listAreaIds.has(place.id))
       && (!listTopOnly || place.top));
     return items.sort((a, b) => {
       if (listSort === "name") {
@@ -392,15 +348,18 @@ export default function Home() {
       const comparison = (a.clipDate || "").localeCompare(b.clipDate || "");
       return (listSortDirection === "asc" ? comparison : -comparison) || b.id - a.id;
     });
-  }, [listOpen, listSort, listSortDirection, listTopOnly, viewportBounds, viewportRevision, visiblePlaces]);
+  }, [listAreaIds, listSort, listSortDirection, listTopOnly, visiblePlaces]);
+  // A row that scrolled out of the list is no longer active or hovered.
+  const activeListPlace = activeListChoice && listPlaces.some((place) => place.id === activeListChoice.id) ? activeListChoice : null;
+  const hoveredListPlace = hoveredListChoice && listPlaces.some((place) => place.id === hoveredListChoice.id) ? hoveredListChoice : null;
   const connectorPlace = hoveredListPlace ?? activeListPlace;
   const highlightedPlace = hoveredListPlace ?? mapHoveredPlace;
-  const viewportHidesClips = visiblePlaces.some((place) => !placeIsInViewport(place, viewportBounds)
-    || !placeIsInVisibleMapArea(place, mapRef.current, listOpen, listPanelRef.current));
+  const viewportHidesClips = useMemo(() => Boolean(listAreaIds)
+    && visiblePlaces.some((place) => !listAreaIds?.has(place.id)), [listAreaIds, visiblePlaces]);
   const hasActiveFilters = !showZed || topOnly || listTopOnly || Boolean(searchTokens.length)
     || selectedCategories.length !== categories.length || selectedCountries.length !== countries.length || viewportHidesClips;
 
-  useEffect(() => { listOpenRef.current = listOpen; setViewportRevision((revision) => revision + 1); }, [listOpen]);
+  useEffect(() => { listOpenRef.current = listOpen; syncListAreaRef.current(); }, [listOpen]);
 
   useEffect(() => {
     let active = true;
@@ -426,6 +385,7 @@ export default function Home() {
   }, [dataAttempt]);
 
   useEffect(() => {
+    if (window.location.hostname.endsWith("github.io")) return;
     let active = true;
     const endpoint = "/api/live";
     const timer = window.setTimeout(() => {
@@ -465,7 +425,8 @@ export default function Home() {
     import("maplibre-gl").then((maplibreModule) => {
       const maplibregl = maplibreModule;
       if (cancelled || !mapContainer.current) return;
-      maplibregl.setWorkerUrl(mapWorkerUrl);
+      // The worker imports ./maplibre-gl-shared.mjs, so both are served unbundled from public/.
+      maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
       const map = new maplibregl.Map({
         container: mapContainer.current,
         style: MAP_STYLE,
@@ -476,15 +437,17 @@ export default function Home() {
       });
       mapRef.current = map;
       setMapReady(false);
+      mapLoadingRef.current?.classList.add("visible");
       map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
       map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
       let prefetchTimer = 0;
+      const prefetcher = createTilePrefetcher();
       let glowTimer = 0;
       let glowFrame = 0;
       const scheduleTilePrefetch = () => {
         window.clearTimeout(prefetchTimer);
-        prefetchTimer = window.setTimeout(() => prefetchTileRing(map), 140);
+        prefetchTimer = window.setTimeout(() => prefetchTileRing(map, prefetcher), 140);
       };
       const scheduleNodeGlow = () => {
         window.clearTimeout(glowTimer);
@@ -515,11 +478,11 @@ export default function Home() {
           glowFrame = window.requestAnimationFrame(render);
         }, 60);
       };
-      const syncViewportBounds = () => {
-        const bounds = map.getBounds();
-        setViewportBounds({ west: bounds.getWest(), east: bounds.getEast(), south: bounds.getSouth(), north: bounds.getNorth() });
-        setViewportRevision((revision) => revision + 1);
+      const syncListArea = () => {
+        if (cancelled) return;
+        setListAreaIds(placeIdsInVisibleMapArea(places, map, listOpenRef.current, listPanelRef.current));
       };
+      syncListAreaRef.current = syncListArea;
       const wakeMap = () => requestAnimationFrame(() => requestAnimationFrame(() => {
         if (cancelled) return;
         map.resize();
@@ -533,12 +496,14 @@ export default function Home() {
       window.addEventListener("pageshow", wakeMap);
       document.addEventListener("visibilitychange", handleVisibility);
       map.on("moveend", scheduleTilePrefetch);
-      map.on("moveend", syncViewportBounds);
+      map.on("moveend", syncListArea);
       map.on("zoomend", scheduleNodeGlow);
-      map.on("resize", syncViewportBounds);
+      map.on("resize", syncListArea);
       map.on("idle", scheduleTilePrefetch);
       detachMapWakeups = () => {
         window.clearTimeout(prefetchTimer);
+        prefetcher.dispose();
+        syncListAreaRef.current = () => {};
         window.clearTimeout(glowTimer);
         window.cancelAnimationFrame(glowFrame);
         resizeObserver.disconnect();
@@ -546,9 +511,9 @@ export default function Home() {
         window.removeEventListener("pageshow", wakeMap);
         document.removeEventListener("visibilitychange", handleVisibility);
         map.off("moveend", scheduleTilePrefetch);
-        map.off("moveend", syncViewportBounds);
+        map.off("moveend", syncListArea);
         map.off("zoomend", scheduleNodeGlow);
-        map.off("resize", syncViewportBounds);
+        map.off("resize", syncListArea);
         map.off("idle", scheduleTilePrefetch);
       };
 
@@ -803,7 +768,7 @@ export default function Home() {
         else setTimeout(loadCountryBorders, 900);
 
         setMapReady(true);
-        syncViewportBounds();
+        syncListArea();
         wakeMap();
       });
     });
@@ -847,7 +812,7 @@ export default function Home() {
       return;
     }
     const timeout = window.setTimeout(() => {
-      const { offset, padding } = getListAwareMapOptions(map, listOpen, listPanelRef.current);
+      const { offset, padding } = getListAwareMapOptions(map, listOpenRef.current, listPanelRef.current);
       if (visiblePlaces.length === 1) {
         map.easeTo({ center: [visiblePlaces[0].longitude, visiblePlaces[0].latitude], zoom: 14, offset, duration: 650 });
         return;
@@ -868,16 +833,6 @@ export default function Home() {
     }, searchTokens.length ? 260 : 0);
     return () => window.clearTimeout(timeout);
   }, [mapReady, searchTokens.length, visiblePlaces]);
-
-  useEffect(() => {
-    if (activeListPlace && !listPlaces.some((place) => place.id === activeListPlace.id)) {
-      setActiveListPlace(null);
-      setConnectorLine(null);
-    }
-    if (hoveredListPlace && !listPlaces.some((place) => place.id === hoveredListPlace.id)) {
-      setHoveredListPlace(null);
-    }
-  }, [activeListPlace, hoveredListPlace, listPlaces]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -925,11 +880,15 @@ export default function Home() {
   }, [activeListPlace, connectorPlace, hoveredListPlace, listOpen, mapReady]);
 
   useEffect(() => {
-    if (!listOpen) return;
-    const close = (event: KeyboardEvent) => event.key === "Escape" && setListOpen(false);
+    if (selected || (!listOpen && !filtersOpen)) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (filtersOpen) setFiltersOpen(false);
+      else setListOpen(false);
+    };
     document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);
-  }, [listOpen]);
+  }, [filtersOpen, listOpen, selected]);
 
   useEffect(() => {
     if (!selected) return;
@@ -944,15 +903,6 @@ export default function Home() {
     update(current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
 
   const updateSearchQuery = (nextQuery: string) => {
-    const map = mapRef.current;
-    const previous = normalizeSearch(searchQuery);
-    const next = normalizeSearch(nextQuery);
-    if (!previous && next && map) {
-      const center = map.getCenter();
-      searchOriginRef.current = { center: [center.lng, center.lat], zoom: map.getZoom() };
-    } else if (!next) {
-      searchOriginRef.current = null;
-    }
     setSuggestionCursor(0);
     setSearchQuery(nextQuery);
   };
@@ -999,7 +949,6 @@ export default function Home() {
     setSearchFocused(false);
     setActiveListPlace(null);
     setHoveredListPlace(null);
-    searchOriginRef.current = null;
     const map = mapRef.current;
     if (!map || !places.length) return;
     const west = Math.min(...places.map((place) => place.longitude));
@@ -1019,9 +968,9 @@ export default function Home() {
     <main className="site-shell">
       <header className="site-header">
         <div className="identity">
-          <div className="wordmark" aria-label="Geri Clips"><span>Geri</span><em>Clips</em></div>
+          <h1 className="wordmark" aria-label="Geri Clips"><span>Geri</span><em>Clips</em></h1>
         </div>
-        <a className="twitch-button" href={TWITCH_URL} target="_blank" rel="noreferrer">Twitch profil</a>
+        <a className="twitch-button" href={TWITCH_URL} target="_blank" rel="noreferrer">Twitch-profil</a>
         {online && (
           <a className="live-button" href={TWITCH_URL} target="_blank" rel="noreferrer">
             <span className="live-led" aria-hidden="true" />LIVE
@@ -1032,24 +981,29 @@ export default function Home() {
       <div className="filter-area">
         <div className="search-box">
           <span className="search-icon" aria-hidden="true" />
-          <input type="search" value={searchQuery} onChange={(event) => updateSearchQuery(event.target.value)}
+          <input type="search" value={searchQuery} onChange={(event) => { setSearchFocused(true); updateSearchQuery(event.target.value); }}
             onFocus={() => setSearchFocused(true)} onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
             onKeyDown={(event) => {
+              if (!suggestionsOpen) return;
               if (event.key === "ArrowDown" && searchSuggestions.length) {
                 event.preventDefault(); setSuggestionCursor((cursor) => (cursor + 1) % searchSuggestions.length);
               } else if (event.key === "ArrowUp" && searchSuggestions.length) {
                 event.preventDefault(); setSuggestionCursor((cursor) => (cursor - 1 + searchSuggestions.length) % searchSuggestions.length);
               } else if (event.key === "Enter" && searchSuggestions[suggestionCursor]) {
                 event.preventDefault(); chooseSuggestion(searchSuggestions[suggestionCursor]);
-              } else if (event.key === "Escape") setSearchFocused(false);
+              } else if (event.key === "Escape") {
+                // React listens on the document too, so mark the event handled for the close-panels listener.
+                event.preventDefault(); event.stopPropagation(); setSearchFocused(false);
+              }
             }}
-            placeholder="Balaton, vicces, zene, ..." aria-label="Keresés a klipek között"
-            aria-autocomplete="list" aria-controls="search-suggestions" />
+            placeholder="Balaton, vicces, zene…" aria-label="Keresés a klipek között"
+            role="combobox" aria-expanded={suggestionsOpen} aria-autocomplete="list" aria-controls="search-suggestions"
+            aria-activedescendant={suggestionsOpen && searchSuggestions[suggestionCursor] ? `search-option-${suggestionCursor}` : undefined} />
           {searchQuery && <button className="search-clear" onClick={() => updateSearchQuery("")} aria-label="Keresés törlése">×</button>}
-          {searchFocused && normalizeSearch(searchQuery).length >= 2 && (
+          {suggestionsOpen && (
             <div className="search-suggestions" id="search-suggestions" role="listbox">
               {searchSuggestions.length ? searchSuggestions.map((suggestion, index) => (
-                <button key={suggestion.normalized} type="button" role="option" aria-selected={index === suggestionCursor}
+                <button key={suggestion.normalized} id={`search-option-${index}`} type="button" tabIndex={-1} role="option" aria-selected={index === suggestionCursor}
                   className={index === suggestionCursor ? "active" : ""}
                   onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSuggestion(suggestion)}>
                   <span className="suggestion-label">{suggestion.label}</span>
@@ -1121,7 +1075,7 @@ export default function Home() {
           <div className="clip-list-heading">
             <div className="clip-list-titlebar"><h2>Lista</h2><small>{listPlaces.length} klip</small></div>
             <div className="clip-list-toolbar">
-              <button type="button" className="list-clear-button" disabled={!hasActiveFilters} onClick={clearAllFilters}>ÖSSZES</button>
+              <button type="button" className="list-clear-button" disabled={!hasActiveFilters} onClick={clearAllFilters}>Szűrők törlése</button>
               <button type="button" className={`list-top-toggle ${listTopOnly ? "active" : ""}`}
                 aria-pressed={listTopOnly} onClick={() => setListTopOnly((onlyTop) => !onlyTop)}>
                 <span aria-hidden="true"><i /></span>TOP
@@ -1139,20 +1093,16 @@ export default function Home() {
           </div>
           <div className="clip-list-scroll" ref={listScrollRef}>
             {listOpen ? (listPlaces.length ? listPlaces.map((place) => (
-              <div key={place.id} role="button" tabIndex={0}
+              <div key={place.id}
                 ref={(element) => { if (element) listRowRefs.current.set(place.id, element); else listRowRefs.current.delete(place.id); }}
                 className={`clip-list-row ${!place.clipUrl ? "inactive" : ""} ${activeListPlace?.id === place.id ? "active" : ""} ${mapHoveredPlace?.id === place.id ? "map-hovered" : ""}`}
                 onMouseEnter={() => setHoveredListPlace(place)} onMouseLeave={() => setHoveredListPlace(null)}
-                onClick={() => activateListPlace(place)}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-                  event.preventDefault(); activateListPlace(place);
-                }} title={!place.clipUrl ? "Ehhez a helyhez nincs lejátszható klip" : undefined}>
+                title={!place.clipUrl ? "Ehhez a helyhez nincs lejátszható klip" : undefined}>
                 <button className="list-play-button" type="button" disabled={!place.clipUrl}
                   aria-label={place.clipUrl ? `${place.name || "Névtelen klip"} lejátszása` : "Nincs lejátszható klip"}
                   onClick={(event) => { event.stopPropagation(); if (place.clipUrl) setSelected(place); }} />
                 {place.top && <span className="list-top-badge">TOP</span>}
-                <span className="clip-list-title">{place.name || "Névtelen klip"}</span>
+                <button className="clip-list-title" type="button" onClick={() => activateListPlace(place)}>{place.name || "Névtelen klip"}</button>
                 {place.clipDate && <time dateTime={place.clipDate}>{place.clipDate.replaceAll("-", "/")}</time>}
               </div>
             )) : <p className="clip-list-empty">Nincs megjeleníthető klip.</p>) : null}
@@ -1168,12 +1118,12 @@ export default function Home() {
         transform: `rotate(${connectorLine.angle}deg)`,
       }} />}
 
-      <div ref={mapContainer} className="map" aria-label="Geri klipjeinek interaktív térképe"
+      <div ref={mapContainer} className="map" role="region" aria-label="Geri klipjeinek interaktív térképe"
         data-visible-count={visiblePlaces.length} />
       {dataError && <div className="map-data-error" role="alert">{dataError}{" "}
         <button type="button" onClick={() => setDataAttempt((attempt) => attempt + 1)}>Újrapróbálás</button>
       </div>}
-      <div ref={mapLoadingRef} className="map-loading" role="status" aria-label="Térkép betöltése">
+      <div ref={mapLoadingRef} className="map-loading visible" role="status" aria-label="Térkép betöltése">
         <span className="map-loading-spinner" aria-hidden="true" />
       </div>
 

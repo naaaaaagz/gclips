@@ -14,7 +14,11 @@ The app reads both GCLIPS tabs at runtime. The standalone page contains a saved 
 
 After source edits, preserve the current data with `node scripts/generate-standalone.mjs --offline`. To deliberately refresh from the Sheet, run it without `--offline`. Both modes update `index.html`, the fallback snapshot and bundled map assets. Keep these outputs together.
 
-Verify with `node scripts/validate-standalone.mjs`, `node --test --test-isolation=none scripts/clip-data.test.mjs`, `pnpm exec tsc --noEmit --incremental false` and `pnpm build`.
+Refreshing from the Sheet, and the app's live `/api/places` data, only work while the Sheet is shared as "Anyone with the link can view". Otherwise Google answers with a sign-in page and the generator stops with an error.
+
+The LIVE button needs a hosted copy of `app/api/live/route.ts` with `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`. GitHub Pages cannot run it, so the static page only checks when `LIVE_URL` in `scripts/generate-standalone.mjs` is set to that full URL.
+
+Verify with `node scripts/validate-standalone.mjs`, `node --test --test-isolation=none scripts/clip-data.test.mjs`, `pnpm exec tsc --noEmit --incremental false`, `pnpm lint` and `pnpm build`.
 
 ## Local development
 

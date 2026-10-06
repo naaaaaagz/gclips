@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getClipId, parseCoordinates } from "../lib/clip-data.mjs";
+import { getClipId, normalizeClipDate, parseCoordinates, parseSheetPlaces, parseSheetResponse } from "../lib/clip-data.mjs";
+import { createTilePrefetcher, tileRingUrls } from "../lib/tile-prefetch.mjs";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { GET } from "../app/api/live/route.ts";
@@ -73,6 +74,49 @@ test("LIVE distinguishes failed checks and retries rejected tokens once", async 
     if (originalId === undefined) delete process.env.TWITCH_CLIENT_ID; else process.env.TWITCH_CLIENT_ID = originalId;
     if (originalSecret === undefined) delete process.env.TWITCH_CLIENT_SECRET; else process.env.TWITCH_CLIENT_SECRET = originalSecret;
   }
+});
+
+test("Sheet rows become places with stable ids and ISO dates", () => {
+  const row = (...values) => ({ c: values.map((v) => (v === null ? null : { v })) });
+  const tables = [
+    { zedSource: false, rows: [
+      row("Clip name", "Clip URL", "Category", "", "", "Coordinates", "", "Country", "Date", "Top"),
+      row(" Balaton ", "https://clips.twitch.tv/Test-1", "Kör", "a, b", "c", "46.9, 17.9", "Twitch title", "Hungary", "Date(2025,11,2)", "top"),
+      row("No coordinates", "", "", "", "", "", "", "", "", ""),
+    ] },
+    { zedSource: true, rows: [row("Zed", "", "Zed kör", "", "", "47,19", "", "Hungary", "2025-01-05", null)] },
+  ];
+  const places = parseSheetPlaces(tables, { "Test-1": { category: "Just Chatting" } });
+  assert.equal(places.length, 2);
+  assert.deepEqual(places.map((place) => [place.id, place.name, place.clipDate, place.top, place.zedSource]),
+    [[2, "Balaton", "2025-12-02", true, false], [1_000_001, "Zed", "2025-01-05", false, true]]);
+  assert.equal(places[0].twitchCategory, "Just Chatting");
+  assert.equal("twitchKeywords" in places[0], false);
+  assert.equal(normalizeClipDate("Date(2024,0,31)"), "2024-01-31");
+  assert.deepEqual(parseSheetResponse('/*O_o*/\ngoogle.visualization.Query.setResponse({"table":{"rows":[]}});'), []);
+  assert.throws(() => parseSheetResponse("<html>Sign in</html>"));
+});
+
+test("tile ring skips visible tiles and wraps around the date line", () => {
+  const urls = tileRingUrls({ west: -1, east: 1, south: -1, north: 1 }, 2, "{z}/{x}/{y}");
+  assert.equal(urls.length, 12);
+  assert.ok(!urls.includes("2/1/1") && !urls.includes("2/2/2"));
+  assert.ok(urls.includes("2/0/1") && urls.includes("2/3/2"));
+});
+
+test("tile prefetcher cancels requests the current view no longer needs", async () => {
+  const signals = new Map();
+  const prefetcher = createTilePrefetcher((url, { signal }) => {
+    signals.set(url, signal);
+    return new Promise(() => {});
+  });
+  prefetcher.update(["a", "b"]);
+  await Promise.resolve();
+  prefetcher.update(["b", "c"]);
+  assert.equal(signals.get("a").aborted, true);
+  assert.equal(signals.get("b").aborted, false);
+  prefetcher.dispose();
+  assert.equal(signals.get("b").aborted, true);
 });
 
 test("both Twitch clip URL forms work without trusting other hosts", () => {

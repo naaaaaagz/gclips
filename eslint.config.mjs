@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated copies of the MapLibre bundle for the standalone page.
+    "**/maplibre-gl*.mjs",
   ]),
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
