@@ -70,7 +70,7 @@ type SearchSuggestion = {
 type ConnectorLine = { left: number; top: number; width: number; angle: number; preview: boolean };
 type ViewportBounds = { west: number; east: number; south: number; north: number };
 
-function unique(values: string[]) { return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b)); }
+function unique(values: string[]) { return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "hu")); }
 function countryNameHu(country: string) { return COUNTRY_NAMES_HU[country] ?? country; }
 function countValues(values: string[]) {
   return values.reduce<Record<string, number>>((counts, value) => {
@@ -250,6 +250,15 @@ function makeTopStar(glow = 0, zed = false) {
   return context.getImageData(0, 0, size, size);
 }
 
+const starFrames = new Map<string, ImageData | null>();
+
+function cachedTopStar(glow = 0, zed = false) {
+  const step = Math.round(glow * 12);
+  const key = `${zed ? "zed" : ""}${step}`;
+  if (!starFrames.has(key)) starFrames.set(key, makeTopStar(step / 12, zed));
+  return starFrames.get(key) ?? null;
+}
+
 function makeTitleLabelBackground(hovered = false) {
   const width = 40; const height = 36;
   const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
@@ -268,7 +277,7 @@ function makeTitleLabelBackground(hovered = false) {
 function ClipPlayer({ clipId, parent, title }: { clipId: string; parent: string; title: string }) {
   return (
     <div className="player-frame">
-      <iframe src={`https://clips.twitch.tv/embed?clip=${encodeURIComponent(clipId)}&parent=${encodeURIComponent(parent)}&autoplay=true&muted=false`}
+      <iframe src={`https://clips.twitch.tv/embed?clip=${encodeURIComponent(clipId)}&parent=${encodeURIComponent(parent)}&autoplay=false&muted=false`}
         title={title} allow="autoplay; fullscreen" allowFullScreen />
     </div>
   );
@@ -325,17 +334,18 @@ export default function Home() {
   const suggestionIndex = useMemo(() => buildSearchSuggestions(places), [places]);
   const searchSuggestions = useMemo(() => rankSearchSuggestions(suggestionIndex, searchQuery), [suggestionIndex, searchQuery]);
   const suggestionsOpen = searchFocused && normalizeSearch(searchQuery).length >= 2;
+  const searchText = useMemo(() => new Map(places.map((place) => [place.id, normalizeSearch([
+    place.keywords, place.sourceKeywords, place.category, place.name, place.twitchTitle,
+    place.twitchCategory, place.country, countryNameHu(place.country),
+  ].join(" "))])), [places]);
   const visiblePlaces = useMemo(() => places.filter((place) => {
     if (!showZed && place.zedSource) return false;
     if ((place.category && !selectedCategories.includes(place.category)) || (place.country && !selectedCountries.includes(place.country))) return false;
     if (topOnly && !place.top) return false;
     if (!searchTokens.length) return true;
-    const haystack = normalizeSearch([
-      place.keywords, place.sourceKeywords, place.category, place.name, place.twitchTitle,
-      place.twitchCategory, place.country, countryNameHu(place.country),
-    ].join(" "));
+    const haystack = searchText.get(place.id) ?? "";
     return searchTokens.every((token) => haystack.includes(token));
-  }), [places, searchTokens, selectedCategories, selectedCountries, showZed, topOnly]);
+  }), [places, searchText, searchTokens, selectedCategories, selectedCountries, showZed, topOnly]);
   const listPlaces = useMemo(() => {
     const items = visiblePlaces.filter((place) => (!listAreaIds || listAreaIds.has(place.id))
       && (!listTopOnly || place.top));
@@ -388,12 +398,19 @@ export default function Home() {
     if (window.location.hostname.endsWith("github.io")) return;
     let active = true;
     const endpoint = "/api/live";
-    const timer = window.setTimeout(() => {
-      fetch(endpoint).then((response) => response.ok ? response.json() : { online: false })
-        .then((payload: { online?: boolean }) => { if (active) setOnline(Boolean(payload.online)); })
+    const checkLive = () => {
+      if (document.hidden) return;
+      fetch(endpoint, { signal: AbortSignal.timeout(10_000) }).then((response) => response.ok ? response.json() : null)
+        .then((payload: { online?: boolean } | null) => { if (active && payload) setOnline(Boolean(payload.online)); })
         .catch(() => {});
-    }, 1600);
-    return () => { active = false; window.clearTimeout(timer); };
+    };
+    const timer = window.setTimeout(checkLive, 1600);
+    const interval = window.setInterval(checkLive, 120_000);
+    document.addEventListener("visibilitychange", checkLive);
+    return () => {
+      active = false; window.clearTimeout(timer); window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", checkLive);
+    };
   }, []);
 
   useEffect(() => {
@@ -445,13 +462,18 @@ export default function Home() {
       const prefetcher = createTilePrefetcher();
       let glowTimer = 0;
       let glowFrame = 0;
+      const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+      const saveData = Boolean(connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType ?? "")));
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
       const scheduleTilePrefetch = () => {
+        if (saveData) return;
         window.clearTimeout(prefetchTimer);
         prefetchTimer = window.setTimeout(() => prefetchTileRing(map, prefetcher), 140);
       };
       const scheduleNodeGlow = () => {
         window.clearTimeout(glowTimer);
         window.cancelAnimationFrame(glowFrame);
+        if (reducedMotion.matches) return;
         glowTimer = window.setTimeout(() => {
           if (!map.getLayer("clip-points") || !map.hasImage("top-star")) return;
           const startedAt = performance.now();
@@ -462,16 +484,16 @@ export default function Home() {
             const strength = Math.sin(progress * Math.PI);
             const color = normal.map((channel, index) => Math.round(channel + (highlight[index] - channel) * strength));
             map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "zedSource"], "#f6bd7b", ["get", "linked"], `rgb(${color.join(",")})`, "#7c9299"]);
-            const glowingStar = makeTopStar(strength);
+            const glowingStar = cachedTopStar(strength);
             if (glowingStar) map.updateImage("top-star", glowingStar);
-            const glowingZedStar = makeTopStar(strength, true);
+            const glowingZedStar = cachedTopStar(strength, true);
             if (glowingZedStar && map.hasImage("zed-top-star")) map.updateImage("zed-top-star", glowingZedStar);
             if (progress < 1) glowFrame = window.requestAnimationFrame(render);
             else {
               map.setPaintProperty("clip-points", "circle-color", ["case", ["get", "zedSource"], "#f6bd7b", ["get", "linked"], "#39d9cc", "#7c9299"]);
-              const baseStar = makeTopStar();
+              const baseStar = cachedTopStar();
               if (baseStar) map.updateImage("top-star", baseStar);
-              const baseZedStar = makeTopStar(0, true);
+              const baseZedStar = cachedTopStar(0, true);
               if (baseZedStar && map.hasImage("zed-top-star")) map.updateImage("zed-top-star", baseZedStar);
             }
           };
@@ -676,35 +698,37 @@ export default function Home() {
           map.setPaintProperty("hovered-clip-label", "text-translate", [0, 0]);
           hoveredLabelLeaveTimerRef.current = window.setTimeout(clearHoveredTitleLabel, 175);
         };
-        const bindPointLayer = (layerId: string) => {
-          map.on("mouseenter", layerId, (event) => {
-            map.getCanvas().style.cursor = "pointer";
-            const feature = event.features?.[0];
-            if (!feature || feature.geometry.type !== "Point") return;
-            const place = places.find((item) => item.id === Number(feature.properties?.id));
-            setMapHoveredPlace(place ?? null);
-            if (place && showTitlesRef.current) {
-              popup.remove();
-              emphasizeTitleLabel(place);
-              return;
-            }
-            popup.setLngLat(feature.geometry.coordinates as [number, number])
-              .setText(String(feature.properties?.name ?? "Névtelen klip")).addTo(map);
-          });
-          map.on("mouseleave", layerId, () => {
-            map.getCanvas().style.cursor = "";
-            setMapHoveredPlace(null);
-            if (showTitlesRef.current) deEmphasizeTitleLabel(); else popup.remove();
-          });
-          map.on("click", layerId, (event) => {
-            const id = Number(event.features?.[0]?.properties?.id);
-            const place = places.find((item) => item.id === id);
-            if (place?.clipUrl) setSelected(place);
-          });
+        // One hover handler for all pin layers, so moving between overlapping layers does not flicker.
+        const pointLayers = ["hovered-clip-label", "clip-labels", "clip-hit-area"];
+        const placesById = new Map(places.map((place) => [place.id, place]));
+        let hoveredPlace: Place | null = null;
+        const pointPlaceAt = (point: { x: number; y: number }) => {
+          const feature = map.queryRenderedFeatures([point.x, point.y], { layers: pointLayers })
+            .find((item) => item.geometry.type === "Point");
+          return feature ? placesById.get(Number(feature.properties?.id)) ?? null : null;
         };
-        bindPointLayer("clip-hit-area");
-        bindPointLayer("clip-labels");
-        bindPointLayer("hovered-clip-label");
+        const setHoveredPlace = (place: Place | null) => {
+          if (place === hoveredPlace) return;
+          if (hoveredPlace) {
+            if (showTitlesRef.current) deEmphasizeTitleLabel(); else popup.remove();
+          }
+          hoveredPlace = place;
+          map.getCanvas().style.cursor = place ? "pointer" : "";
+          setMapHoveredPlace(place);
+          if (!place) return;
+          if (showTitlesRef.current) {
+            popup.remove();
+            emphasizeTitleLabel(place);
+          } else {
+            popup.setLngLat([place.longitude, place.latitude]).setText(place.name || "Névtelen klip").addTo(map);
+          }
+        };
+        map.on("mousemove", (event) => setHoveredPlace(pointPlaceAt(event.point)));
+        map.getCanvas().addEventListener("mouseleave", () => setHoveredPlace(null));
+        map.on("click", (event) => {
+          const place = pointPlaceAt(event.point);
+          if (place?.clipUrl) setSelected(place);
+        });
         map.on("mouseenter", "clip-clusters", (event) => {
           map.getCanvas().style.cursor = "pointer";
           const feature = event.features?.[0];

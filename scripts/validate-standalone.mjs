@@ -10,6 +10,10 @@ const code = html.slice(scriptStart, scriptEnd);
 const syntax = spawnSync(process.execPath, ["--input-type=module", "--check"], { input: code, encoding: "utf8" });
 if (syntax.status !== 0) throw new Error(syntax.stderr || syntax.error?.message || "Standalone syntax check failed");
 if (html.includes("unpkg.com/maplibre-gl")) throw new Error("Standalone must use the bundled MapLibre version");
+if (!html.includes("autoplay=false&muted=false") || html.includes("autoplay=true")) {
+  throw new Error("Twitch clips must load unmuted and wait for the visitor to press Play");
+}
+if (!html.includes('<meta property="og:image" content="https://')) throw new Error("Link previews need an absolute og:image URL");
 if (/fetch\(["']\/api\//.test(code)) throw new Error("GitHub Pages has no /api routes; use a full URL");
 
 const expectedDescription = "AgeriVagyok streamjeinek emlékezetes klipjei térképen.";

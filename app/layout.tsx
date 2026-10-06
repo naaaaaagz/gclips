@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Geri Clips",
   description: "AgeriVagyok streamjeinek emlékezetes klipjei térképen.",
-  keywords: ["geri", "agerivagyok", "twitch", "streamer", "clip", "clips", "clipek", "térkép"],
+  keywords: ["geri", "agerivagyok", "twitch", "streamer", "clip", "clips", "klipek", "térkép"],
   manifest: "/site.webmanifest",
   icons: {
     icon: [
