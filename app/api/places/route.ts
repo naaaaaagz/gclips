@@ -1,4 +1,6 @@
 import twitchMetadata from "../../../data/twitch-meta.json";
+import { getClipId, parseCoordinates } from "../../../lib/clip-data.mjs";
+const metadata: Record<string, { category?: string; language?: string }> = twitchMetadata;
 
 const SOURCE_PARTS = [
   "MXJtQ3BV",
@@ -26,17 +28,13 @@ function cell(row: { c?: Cell[] }, index: number) {
   return row.c?.[index]?.v ?? "";
 }
 
-function getClipId(url: string) {
-  return url.match(/\/clip\/([^/?#]+)/)?.[1] ?? "";
-}
-
 export async function GET() {
   const source = decodeSource();
 
   try {
     const tables = await Promise.all(SOURCE_TABS.map(async (tab) => {
       const endpoint = `https://docs.google.com/spreadsheets/d/${source}/gviz/tq?tqx=out:json&gid=${tab.gid}`;
-      const response = await fetch(endpoint, { next: { revalidate: 300 } });
+      const response = await fetch(endpoint, { next: { revalidate: 300 }, signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`Source returned ${response.status}`);
       const body = await response.text();
       const start = body.indexOf("{");
@@ -47,12 +45,10 @@ export async function GET() {
 
     const places = tables.flatMap((table, tableIndex) => table.rows
       .map((row, index) => {
-        const coordinates = String(cell(row, 5))
-          .split(",")
-          .map((value) => Number(value.trim()));
+        const coordinates = parseCoordinates(cell(row, 5));
         const clipUrl = String(cell(row, 1));
         const clipId = getClipId(clipUrl);
-        const twitch = twitchMetadata[clipId as keyof typeof twitchMetadata];
+        const twitch = metadata[clipId];
 
         return {
           id: tableIndex * 1_000_000 + index + 1,
@@ -61,8 +57,8 @@ export async function GET() {
           category: String(cell(row, 2)),
           sourceKeywords: String(cell(row, 3)),
           keywords: String(cell(row, 4)),
-          latitude: coordinates[0],
-          longitude: coordinates[1],
+          latitude: coordinates?.[0],
+          longitude: coordinates?.[1],
           twitchTitle: String(cell(row, 6)),
           country: String(cell(row, 7)),
           clipDate: String(cell(row, 8)),
